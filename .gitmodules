@@ -34,3 +34,7 @@
 [submodule "modules/libmemcached"]
 	path = modules/libmemcached
 	url = git@github.com:Metaswitch/libmemcached-upstream.git
+[submodule "modules/rlite"]
+	path = modules/rlite
+	url = git@github.com:vmaffione/rlite.git
+	branch = next
