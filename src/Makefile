@@ -115,6 +115,7 @@ COMMON_LDFLAGS := -L../usr/lib \
                   -lboost_system \
                   -lpthread \
                   -lcurl \
+                  ../usr/lib/librina-api.so \
                   -lc \
                   -lsas \
                   -lz \
