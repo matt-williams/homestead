@@ -95,6 +95,8 @@ struct options
   bool daemon;
   bool sas_signaling_if;
   bool request_shared_ifcs;
+  std::string rina_dif_name;
+  std::string rina_appl_name;
 };
 
 // Enum for option types not assigned short-forms
@@ -124,7 +126,9 @@ enum OptionTypes
   PIDFILE,
   DAEMON,
   REG_MAX_EXPIRES,
-  CASSANDRA_THREADS
+  CASSANDRA_THREADS,
+  RINA_DIF_NAME,
+  RINA_APPL_NAME,
 };
 
 const static struct option long_opt[] =
@@ -172,6 +176,8 @@ const static struct option long_opt[] =
   {"daemon",                      no_argument,       NULL, DAEMON},
   {"sas-use-signaling-interface", no_argument,       NULL, SAS_USE_SIGNALING_IF},
   {"request-shared-ifcs",         no_argument,       NULL, REQUEST_SHARED_IFCS},
+  {"rina-dif-name",               required_argument, NULL, RINA_DIF_NAME},
+  {"rina-appl-name",              required_argument, NULL, RINA_APPL_NAME},
   {NULL,                          0,                 NULL, 0},
 };
 
@@ -248,6 +254,8 @@ void usage(void)
        "     --dns-timeout <milliseconds>\n"
        "                            The amount of time to wait for a DNS response (default: 200)n"
        "     --request-shared-ifcs  Indicate support for Shared IFC sets in the Supported-Features AVP.\n"
+       "     --rina-dif-name        RINA DIF name to listen on\n"
+       "     --rina-appl-name       RINA application name to present\n"
        " -F, --log-file <directory>\n"
        "                            Log to file in specified directory\n"
        " -L, --log-level N          Set log level to N (default: 4)\n"
@@ -546,6 +554,14 @@ int init_options(int argc, char**argv, struct options& options)
       // Ignore F and L - these are handled by init_logging_options
       break;
 
+    case RINA_DIF_NAME:
+      options.rina_dif_name = std::string(optarg);
+      break;
+
+    case RINA_APPL_NAME:
+      options.rina_appl_name = std::string(optarg);
+      break;
+
     case 'h':
       usage();
       return -1;
@@ -714,6 +730,8 @@ int main(int argc, char**argv)
   options.daemon = false;
   options.sas_signaling_if = false;
   options.request_shared_ifcs = false;
+  options.rina_dif_name = "";
+  options.rina_appl_name = "";
 
   if (init_logging_options(argc, argv, options) != 0)
   {
@@ -1067,6 +1085,11 @@ int main(int argc, char**argv)
     http_stack_sig->initialize();
     http_stack_sig->bind_tcp_socket(options.http_address,
                                     options.http_port);
+    if ((!options.rina_dif_name.empty()) &&
+        (!options.rina_appl_name.empty())) {
+      http_stack_sig->bind_rina_socket(options.rina_dif_name,
+                                       options.rina_appl_name);
+    }
     http_stack_sig->register_handler("^/ping$",
                                      &ping_handler);
     http_stack_sig->register_handler("^/impi/[^/]*/digest$",
