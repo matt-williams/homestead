@@ -138,8 +138,8 @@ get_daemon_args()
         [ -z "$cassandra_hostname" ] || cassandra_arg="--cassandra=$cassandra_hostname"
         [ -z "$local_site_name" ] || local_site_name_arg="--local-site-name=$local_site_name"
         [ -z "$homestead_impu_store" ] || impu_store_arg="--impu-store=$homestead_impu_store"
-        [ -z "$rina_dif_name" ] || rina_dif_name_arg="--impu-store=$rina_dif_name"
-        [ -z "$rina_appl_name" ] || rina_appl_name_arg="--impu-store=$rina_appl_name"
+        [ -z "$homestead_rina_dif_name" ] || rina_dif_name_arg="--rina-dif-name=$homestead_rina_dif_name"
+        [ -z "$homestead_rina_appl_name" ] || rina_appl_name_arg="--rina-appl-name=$homestead_rina_appl_name"
 
         DAEMON_ARGS="--localhost=$local_ip
                      --home-domain=$home_domain
