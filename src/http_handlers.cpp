@@ -99,7 +99,7 @@ void ImpiTask::send_mar()
     std::bind(&ImpiTask::on_mar_response, this, _1);
 
   // Send the request
-  _hss->send_multimedia_auth_request(callback, request, this->trail());
+  _hss->send_multimedia_auth_request(callback, request, this->trail(), _req.get_stopwatch());
 }
 
 void ImpiTask::on_mar_response(const HssConnection::MultimediaAuthAnswer& maa)
@@ -345,7 +345,7 @@ void ImpiRegistrationStatusTask::run()
     std::bind(&ImpiRegistrationStatusTask::on_uar_response, this, _1);
 
   // Send the request
-  _hss->send_user_auth_request(callback, request, this->trail());
+  _hss->send_user_auth_request(callback, request, this->trail(), _req.get_stopwatch());
 }
 
 void ImpiRegistrationStatusTask::on_uar_response(const HssConnection::UserAuthAnswer& uaa)
@@ -465,7 +465,7 @@ void ImpuLocationInfoTask::run()
     std::bind(&ImpuLocationInfoTask::on_lir_response, this, _1);
 
   // Send the request
-  _hss->send_location_info_request(callback, request, this->trail());
+  _hss->send_location_info_request(callback, request, this->trail(), _req.get_stopwatch());
 }
 
 void ImpuLocationInfoTask::on_lir_response(const HssConnection::LocationInfoAnswer& lia)
@@ -770,7 +770,8 @@ void ImpuRegDataTask::get_reg_data()
   _cache->get_implicit_registration_set_for_impu(success_cb,
                                                  failure_cb,
                                                  public_id(),
-                                                 this->trail());
+                                                 this->trail(),
+                                                 _req.get_stopwatch());
 }
 
 std::string regstate_to_str(RegistrationState state)
@@ -862,7 +863,7 @@ void ImpuRegDataTask::process_received_reg_data()
   // blank one
   int32_t ttl = _irs->get_ttl();
   std::string service_profile = _irs->get_ims_sub_xml();
-  RegistrationState reg_state = _irs->get_reg_state();
+  _cached_reg_state = _irs->get_reg_state();
   std::vector<std::string> associated_impis = _irs->get_associated_impis();
   ChargingAddresses charging_addrs = _irs->get_charging_addresses();
 
@@ -899,12 +900,13 @@ void ImpuRegDataTask::process_received_reg_data()
 
   if (_type == RequestType::REG)
   {
-    // This message was based on a REGISTER request from Sprout. Check the
-    // cached subscriber state to determine whether this is an initial
-    // registration or a re-registration. If this subscriber is already
-    // registered but is registering with a new binding, we still need to tell
-    // the HSS.
-    if ((reg_state == RegistrationState::REGISTERED) && (!new_binding))
+    // This message was based on a REGISTER request from Sprout. We need to
+    // send an SAR to the HSS unless ALL of the following are true...
+    // - this is a re-registration
+    // - this is not a new binding
+    // - the request hasn't forbidden us from using cached data
+    // - the existing record hasn't timed out.
+    if ((_cached_reg_state == RegistrationState::REGISTERED) && (!new_binding))
     {
       int record_age = _cfg->record_ttl - ttl;
       TRC_DEBUG("Handling re-registration with binding age of %d", record_age);
@@ -952,7 +954,7 @@ void ImpuRegDataTask::process_received_reg_data()
     // (INVITE, PUBLISH, MESSAGE etc.).
     TRC_DEBUG("Handling call");
 
-    if (reg_state == RegistrationState::NOT_REGISTERED)
+    if (_cached_reg_state == RegistrationState::NOT_REGISTERED)
     {
       // We don't know anything about this subscriber. Send a
       // Server-Assignment-Request to provide unregistered service for
@@ -975,7 +977,7 @@ void ImpuRegDataTask::process_received_reg_data()
     // Sprout wants to deregister this subscriber (because of a
     // REGISTER with Expires: 0, a timeout of all bindings, a failed
     // app server, etc.).
-    if (reg_state != RegistrationState::NOT_REGISTERED)
+    if (_cached_reg_state != RegistrationState::NOT_REGISTERED)
     {
       // Forget about this subscriber entirely and send an appropriate SAR.
       TRC_DEBUG("Handling deregistration");
@@ -1028,7 +1030,17 @@ void ImpuRegDataTask::send_reply()
   }
   else
   {
-    rc = XmlUtils::build_ClearwaterRegData_xml(_irs, xml_str);
+    // If this is a PUT of type REG or CALL then include the previous
+    // registration state on the response.
+    if ((_type == RequestType::REG) || (_type == RequestType::CALL))
+    {
+      rc = XmlUtils::build_ClearwaterRegData_xml(_irs, xml_str, _cached_reg_state);
+    }
+    else
+    {
+      // Don't signal a previous registration state.
+      rc = XmlUtils::build_ClearwaterRegData_xml(_irs, xml_str);
+    }
 
     if (rc == HTTP_OK)
     {
@@ -1064,7 +1076,7 @@ void ImpuRegDataTask::send_server_assignment_request(Cx::ServerAssignmentType ty
     std::bind(&ImpuRegDataTask::on_sar_response, this, _1);
 
   // Send the request
-  _hss->send_server_assignment_request(callback, request, this->trail());
+  _hss->send_server_assignment_request(callback, request, this->trail(), _req.get_stopwatch());
 }
 
 void ImpuRegDataTask::put_in_cache()
@@ -1129,7 +1141,7 @@ void ImpuRegDataTask::put_in_cache()
       std::bind(&ImpuRegDataTask::on_put_reg_data_failure, this, _1);
 
     // Cache the IRS
-    _cache->put_implicit_registration_set(success_cb, progress_cb, failure_cb, _irs, this->trail());
+    _cache->put_implicit_registration_set(success_cb, progress_cb, failure_cb, _irs, this->trail(), _req.get_stopwatch());
   }
   else
   {
@@ -1286,7 +1298,7 @@ void ImpuRegDataTask::on_sar_response(const HssConnection::ServerAssignmentAnswe
     failure_callback failure_cb =
       std::bind(&ImpuRegDataTask::on_del_impu_failure, this, _1);
 
-    _cache->delete_implicit_registration_set(success_cb, progress_cb, failure_cb, _irs, this->trail());
+    _cache->delete_implicit_registration_set(success_cb, progress_cb, failure_cb, _irs, this->trail(), _req.get_stopwatch());
     pending_cache_op = true;
   }
 

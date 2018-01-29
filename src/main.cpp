@@ -86,6 +86,7 @@ struct options
   int max_tokens;
   float init_token_rate;
   float min_token_rate;
+  float max_token_rate;
   int exception_max_ttl;
   int astaire_blacklist_duration;
   int http_blacklist_duration;
@@ -114,6 +115,7 @@ enum OptionTypes
   MAX_TOKENS,
   INIT_TOKEN_RATE,
   MIN_TOKEN_RATE,
+  MAX_TOKEN_RATE,
   EXCEPTION_MAX_TTL,
   ASTAIRE_BLACKLIST_DURATION,
   HTTP_BLACKLIST_DURATION,
@@ -167,6 +169,7 @@ const static struct option long_opt[] =
   {"max-tokens",                  required_argument, NULL, MAX_TOKENS},
   {"init-token-rate",             required_argument, NULL, INIT_TOKEN_RATE},
   {"min-token-rate",              required_argument, NULL, MIN_TOKEN_RATE},
+  {"max-token-rate",              required_argument, NULL, MAX_TOKEN_RATE},
   {"exception-max-ttl",           required_argument, NULL, EXCEPTION_MAX_TTL},
   {"astaire-blacklist-duration",  required_argument, NULL, ASTAIRE_BLACKLIST_DURATION},
   {"http-blacklist-duration",     required_argument, NULL, HTTP_BLACKLIST_DURATION},
@@ -239,6 +242,8 @@ void usage(void)
        "                            the throttling code (default: 100.0))\n"
        "     --min-token-rate N     Minimum token refill rate of tokens in the token bucket (used by\n"
        "                            the throttling code (default: 10.0))\n"
+       "     --max-token-rate N     Maximum token refill rate of tokens in the token bucket (used by\n"
+       "                            the throttling code (default: 0.0 - no maximum))\n"
        "     --dns-server <server>[,<server2>,<server3>]\n"
        "                            IP addresses of the DNS servers to use (defaults to 127.0.0.1)\n"
        "     --exception-max-ttl <secs>\n"
@@ -509,6 +514,15 @@ int init_options(int argc, char**argv, struct options& options)
       }
       break;
 
+    case MAX_TOKEN_RATE:
+      options.max_token_rate = atoi(optarg);
+      if (options.max_token_rate < 0)
+      {
+        TRC_ERROR("Invalid --max-token-rate option %s", optarg);
+        return -1;
+      }
+      break;
+
     case EXCEPTION_MAX_TTL:
       options.exception_max_ttl = atoi(optarg);
       TRC_INFO("Max TTL after an exception set to %d",
@@ -598,17 +612,24 @@ void signal_handler(int sig)
   signal(SIGABRT, SIG_DFL);
   signal(SIGSEGV, signal_handler);
 
-  // Log the signal, along with a backtrace.
+  // Log the signal, along with a simple backtrace.
   TRC_BACKTRACE("Signal %d caught", sig);
-
-  // Ensure the log files are complete - the core file created by abort() below
-  // will trigger the log files to be copied to the diags bundle
-  TRC_COMMIT();
 
   // Check if there's a stored jmp_buf on the thread and handle if there is
   exception_handler->handle_exception();
 
+  //
+  // If we get here it means we didn't handle the exception so we need to exit.
+  //
+
   CL_HOMESTEAD_CRASH.log(strsignal(sig));
+
+  // Log a full backtrace to make debugging easier.
+  TRC_BACKTRACE_ADV();
+
+  // Ensure the log files are complete - the core file created by abort() below
+  // will trigger the log files to be copied to the diags bundle
+  TRC_COMMIT();
 
   // Dump a core.
   abort();
@@ -628,7 +649,9 @@ void create_memcached_cache(HssCacheProcessor*& cache_processor,
                             AlarmManager* alarm_manager,
                             std::vector<std::string>& remote_impu_stores_locations,
                             std::string& impu_store_location,
-                            int af)
+                            int af,
+                            int threads,
+                            ExceptionHandler* exception_handler)
 {
   astaire_comm_monitor = new CommunicationMonitor(new Alarm(alarm_manager,
                                                             "homestead",
@@ -661,17 +684,20 @@ void create_memcached_cache(HssCacheProcessor*& cache_processor,
     for (std::vector<std::string>::iterator it = remote_impu_stores_locations.begin();
            it != remote_impu_stores_locations.end();
            ++it)
-      {
-        TRC_STATUS("Using remote impu store: %s", (*it).c_str());
-        Store* remote_data_store = (Store*)new TopologyNeutralMemcachedStore(*it,
-                                                                             astaire_resolver,
-                                                                             true,
-                                                                             remote_astaire_comm_monitor);
-        remote_impu_data_stores.push_back(remote_data_store);
-        remote_impu_stores.push_back(new ImpuStore(remote_data_store));
-      }
+    {
+      TRC_STATUS("Using remote impu store: %s", (*it).c_str());
+      Store* remote_data_store = (Store*)new TopologyNeutralMemcachedStore(*it,
+                                                                           astaire_resolver,
+                                                                           true,
+                                                                           remote_astaire_comm_monitor);
+      remote_impu_data_stores.push_back(remote_data_store);
+      remote_impu_stores.push_back(new ImpuStore(remote_data_store));
+    }
 
-    memcached_cache = new MemcachedCache(local_impu_store, remote_impu_stores);
+    memcached_cache = new MemcachedCache(local_impu_store,
+                                         remote_impu_stores,
+                                         threads * remote_impu_stores_locations.size(),
+                                         exception_handler);
     cache_processor = new HssCacheProcessor(memcached_cache);
   }
   else
@@ -722,6 +748,7 @@ int main(int argc, char**argv)
   options.max_tokens = 1000;
   options.init_token_rate = 100.0;
   options.min_token_rate = 10.0;
+  options.max_token_rate = 0.0;
   options.exception_max_ttl = 600;
   options.http_blacklist_duration = HttpResolver::DEFAULT_BLACKLIST_DURATION;
   options.diameter_blacklist_duration = DiameterResolver::DEFAULT_BLACKLIST_DURATION;
@@ -837,6 +864,10 @@ int main(int argc, char**argv)
                                                                          ".1.2.826.0.1.1578918.9.5.14");
   SNMP::CxCounterTable* rtr_results_table = SNMP::CxCounterTable::create("cx_rtr_results",
                                                                          ".1.2.826.0.1.1578918.9.5.15");
+  SNMP::EventAccumulatorByScopeTable* cache_queue_size_table =
+    SNMP::EventAccumulatorByScopeTable::create("cache_queue_size",
+                                               ".1.2.826.0.1.1578918.9.5.16");
+
   // Must happen after all SNMP tables have been registered.
   init_snmp_handler_threads("homestead");
 
@@ -868,7 +899,8 @@ int main(int argc, char**argv)
   LoadMonitor* load_monitor = new LoadMonitor(options.target_latency_us,
                                               options.max_tokens,
                                               options.init_token_rate,
-                                              options.min_token_rate);
+                                              options.min_token_rate,
+                                              options.max_token_rate);
   DnsCachedResolver* dns_resolver = new DnsCachedResolver(options.dns_servers,
                                                           options.dns_timeout);
   HttpResolver* http_resolver = new HttpResolver(dns_resolver,
@@ -899,12 +931,15 @@ int main(int argc, char**argv)
                          alarm_manager,
                          remote_impu_stores_locations,
                          impu_store_location,
-                         af);
+                         af,
+                         options.cache_threads,
+                         exception_handler);
 
   HssCacheTask::configure_cache(cache_processor);
   bool started = cache_processor->start_threads(options.cache_threads,
                                                 exception_handler,
-                                                0);
+                                                0,
+                                                cache_queue_size_table);
   if (!started)
   {
     CL_HOMESTEAD_CACHE_INIT_FAIL.log();
@@ -1241,6 +1276,7 @@ int main(int argc, char**argv)
   delete lir_results_table; lir_results_table = NULL;
   delete ppr_results_table; ppr_results_table = NULL;
   delete rtr_results_table; rtr_results_table = NULL;
+  delete cache_queue_size_table; cache_queue_size_table = NULL;
 
   delete http_stack_sig; http_stack_sig = NULL;
   delete http_stack_mgmt; http_stack_mgmt = NULL;

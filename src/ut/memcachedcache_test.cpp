@@ -14,6 +14,13 @@
 #include "test_utils.hpp"
 #include "localstore.h"
 #include "fakelogger.h"
+#include "mockimpustore.hpp"
+
+using ::testing::_;
+using ::testing::DoAll;
+using ::testing::InvokeWithoutArgs;
+using ::testing::Return;
+using ::testing::StrictMock;
 
 static LocalStore LOCAL_STORE;
 static LocalStore LOCAL_STORE_2;
@@ -659,9 +666,13 @@ public:
     _local_store = new ImpuStore(_lls);
     _rls = new LocalStore();
     _remote_store = new ImpuStore(_rls);
-    _remote_stores = { _remote_store };
+    _rls_2 = new LocalStore();
+    _remote_store_2 = new ImpuStore(_rls_2);
+    _remote_stores = { _remote_store, _remote_store_2 };
     _memcached_cache = new MemcachedCache(_local_store,
-                                          _remote_stores);
+                                          _remote_stores,
+                                          _remote_stores.size(),
+                                          nullptr);
     _mock_progress_cb = new MockProgressCallback();
   }
 
@@ -671,6 +682,8 @@ public:
     delete _memcached_cache;
     delete _remote_store;
     delete _rls;
+    delete _remote_store_2;
+    delete _rls_2;
     delete _local_store;
     delete _lls;
   }
@@ -680,6 +693,8 @@ private:
   ImpuStore* _local_store;
   LocalStore* _rls;
   ImpuStore* _remote_store;
+  LocalStore* _rls_2;
+  ImpuStore* _remote_store_2;
   std::vector<ImpuStore*> _remote_stores;
 
   MemcachedCache* _memcached_cache;
@@ -723,9 +738,11 @@ TEST_F(MemcachedCacheTest, GetIrsForImpis)
 
   std::vector<ImplicitRegistrationSet*> irss;
 
+  Utils::StopWatch unused;
   Store::Status status =
     _memcached_cache->get_implicit_registration_sets_for_impis({IMPI},
                                                                0L,
+                                                               &unused,
                                                                irss);
 
 
@@ -745,6 +762,7 @@ TEST_F(MemcachedCacheTest, GetIrsForImpisNotFound)
   Store::Status status =
     _memcached_cache->get_implicit_registration_sets_for_impis({IMPI},
                                                                0L,
+                                                               nullptr,
                                                                irss);
 
 
@@ -776,6 +794,7 @@ TEST_F(MemcachedCacheTest, GetIrsForImpuLocalStore)
   Store::Status status =
     _memcached_cache->get_implicit_registration_set_for_impu(IMPU,
                                                              0L,
+                                                             nullptr,
                                                              irs);
 
   ASSERT_EQ(Store::Status::OK, status);
@@ -791,6 +810,7 @@ TEST_F(MemcachedCacheTest, GetIrsForImpuNotFound)
   Store::Status status =
     _memcached_cache->get_implicit_registration_set_for_impu(IMPU,
                                                              0L,
+                                                             nullptr,
                                                              irs);
 
   ASSERT_EQ(Store::Status::NOT_FOUND, status);
@@ -828,6 +848,7 @@ TEST_F(MemcachedCacheTest, GetIrsForImpuLocalStoreViaAssocImpu)
   Store::Status status =
     _memcached_cache->get_implicit_registration_set_for_impu(ASSOC_IMPU,
                                                              0L,
+                                                             nullptr,
                                                              irs);
 
   ASSERT_EQ(Store::Status::OK, status);
@@ -867,6 +888,7 @@ TEST_F(MemcachedCacheTest, GetIrsForImpuLocalStoreViaAssocImpuWithoutImpu)
   Store::Status status =
     _memcached_cache->get_implicit_registration_set_for_impu(ASSOC_IMPU,
                                                              0L,
+                                                             nullptr,
                                                              irs);
 
   ASSERT_EQ(Store::Status::NOT_FOUND, status);
@@ -891,6 +913,7 @@ TEST_F(MemcachedCacheTest, GetIrsForImpuLocalStoreViaAssocImpuMissingDefault)
   Store::Status status =
     _memcached_cache->get_implicit_registration_set_for_impu(ASSOC_IMPU,
                                                              0L,
+                                                             nullptr,
                                                              irs);
 
   ASSERT_EQ(Store::Status::NOT_FOUND, status);
@@ -930,6 +953,7 @@ TEST_F(MemcachedCacheTest, GetIrsForImpuLocalStoreViaAssocImpuToAssocImpu)
   Store::Status status =
     _memcached_cache->get_implicit_registration_set_for_impu(ASSOC_IMPU,
                                                              0L,
+                                                             nullptr,
                                                              irs);
 
   ASSERT_EQ(Store::Status::NOT_FOUND, status);
@@ -960,6 +984,71 @@ TEST_F(MemcachedCacheTest, GetIrsForImpuRemoteStore)
   Store::Status status =
     _memcached_cache->get_implicit_registration_set_for_impu(IMPU,
                                                              0L,
+                                                             nullptr,
+                                                             irs);
+
+  ASSERT_EQ(Store::Status::OK, status);
+  ASSERT_NE(nullptr, irs);
+
+  delete irs;
+}
+
+TEST_F(MemcachedCacheTest, GetIrsForImpuSecondRemoteStore)
+{
+  ImpuStore::DefaultImpu* di =
+    new ImpuStore::DefaultImpu(IMPU,
+                               ASSOC_IMPUS,
+                               IMPIS,
+                               RegistrationState::REGISTERED,
+                               CHARGING_ADDRESSES,
+                               SERVICE_PROFILE,
+                               0L,
+                               time(0) + 1,
+                               _remote_store);
+
+  _remote_store_2->set_impu(di, 0L);
+
+  delete di;
+
+  ImplicitRegistrationSet* irs = nullptr;
+
+  Store::Status status =
+    _memcached_cache->get_implicit_registration_set_for_impu(IMPU,
+                                                             0L,
+                                                             nullptr,
+                                                             irs);
+
+  ASSERT_EQ(Store::Status::OK, status);
+  ASSERT_NE(nullptr, irs);
+
+  delete irs;
+}
+
+TEST_F(MemcachedCacheTest, GetIrsForImpuBothRemoteStores)
+{
+  for(ImpuStore* store : { _remote_store, _remote_store_2})
+  {
+    ImpuStore::DefaultImpu* di =
+      new ImpuStore::DefaultImpu(IMPU,
+                                 ASSOC_IMPUS,
+                                 IMPIS,
+                                 RegistrationState::REGISTERED,
+                                 CHARGING_ADDRESSES,
+                                 SERVICE_PROFILE,
+                                 0L,
+                                 time(0) + 1,
+                                 store);
+    store->set_impu(di, 0L);
+
+    delete di;
+  }
+
+  ImplicitRegistrationSet* irs = nullptr;
+
+  Store::Status status =
+    _memcached_cache->get_implicit_registration_set_for_impu(IMPU,
+                                                             0L,
+                                                             nullptr,
                                                              irs);
 
   ASSERT_EQ(Store::Status::OK, status);
@@ -978,7 +1067,9 @@ TEST_F(MemcachedCacheTest, PutIrs)
   irs->set_reg_state(RegistrationState::REGISTERED);
 
   EXPECT_CALL(*_mock_progress_cb, progress_callback());
-  Store::Status status = _memcached_cache->put_implicit_registration_set(irs, _progress_callback, 0L);
+
+  Utils::StopWatch unused;
+  Store::Status status = _memcached_cache->put_implicit_registration_set(irs, _progress_callback, 0L, &unused);
   EXPECT_EQ(Store::Status::OK, status);
 
   delete irs;
@@ -1015,12 +1106,12 @@ TEST_F(MemcachedCacheTest, PutIrsWithExistingUnrefreshed)
 
   ImplicitRegistrationSet* irs;
 
-  _memcached_cache->get_implicit_registration_set_for_impu(IMPU, 0L, irs);
+  _memcached_cache->get_implicit_registration_set_for_impu(IMPU, 0L, nullptr, irs);
 
   irs->add_associated_impi(IMPI);
 
   EXPECT_CALL(*_mock_progress_cb, progress_callback());
-  Store::Status status = _memcached_cache->put_implicit_registration_set(irs, _progress_callback, 0L);
+  Store::Status status = _memcached_cache->put_implicit_registration_set(irs, _progress_callback, 0L, nullptr);
   EXPECT_EQ(Store::Status::OK, status);
 
   delete irs;
@@ -1047,7 +1138,7 @@ TEST_F(MemcachedCacheTest, PutIrsWithExistingNotRefreshedConflictAssociated)
 
   ImplicitRegistrationSet* irs;
 
-  _memcached_cache->get_implicit_registration_set_for_impu(IMPU, 0L, irs);
+  _memcached_cache->get_implicit_registration_set_for_impu(IMPU, 0L, nullptr, irs);
 
   irs->set_ims_sub_xml(SERVICE_PROFILE_3);
 
@@ -1063,7 +1154,7 @@ TEST_F(MemcachedCacheTest, PutIrsWithExistingNotRefreshedConflictAssociated)
 
   // Errors don't trigger the progress_callback
   EXPECT_EQ(Store::Status::ERROR,
-            _memcached_cache->put_implicit_registration_set(irs, _progress_callback, 0L));
+            _memcached_cache->put_implicit_registration_set(irs, _progress_callback, 0L, nullptr));
 
   delete irs;
 }
@@ -1089,7 +1180,7 @@ TEST_F(MemcachedCacheTest, PutIrsWithExistingRefreshedConflictAssociated)
 
   ImplicitRegistrationSet* irs;
 
-  _memcached_cache->get_implicit_registration_set_for_impu(IMPU, 0L, irs);
+  _memcached_cache->get_implicit_registration_set_for_impu(IMPU, 0L, nullptr, irs);
 
   irs->set_ttl(2);
   irs->set_ims_sub_xml(SERVICE_PROFILE_3);
@@ -1109,10 +1200,54 @@ TEST_F(MemcachedCacheTest, PutIrsWithExistingRefreshedConflictAssociated)
   }
 
   EXPECT_CALL(*_mock_progress_cb, progress_callback());
-  Store::Status status = _memcached_cache->put_implicit_registration_set(irs, _progress_callback, 0L);
+  Store::Status status = _memcached_cache->put_implicit_registration_set(irs, _progress_callback, 0L, nullptr);
   EXPECT_EQ(Store::Status::OK, status);
 
   delete irs;
+}
+
+TEST_F(MemcachedCacheTest, AddNewIrsUnregistered)
+{
+  // Tests the race conditions flow:
+  //  - create IRS for unregistered user
+  //  - create IRS for a user registered
+  //  - store the registered IRS
+  //  - attempt to store the unregistered IRS
+  //
+  // We should see that the final attempt doesn't actually cache the
+  // unregistered IRS, but that it still returns success
+  ImplicitRegistrationSet* unreg_irs =
+    _memcached_cache->create_implicit_registration_set();
+  unreg_irs->set_reg_state(RegistrationState::UNREGISTERED);
+  unreg_irs->set_ttl(1);
+  unreg_irs->set_ims_sub_xml(SERVICE_PROFILE);
+
+  ImplicitRegistrationSet* reg_irs =
+    _memcached_cache->create_implicit_registration_set();
+  reg_irs->set_reg_state(RegistrationState::REGISTERED);
+  reg_irs->set_ttl(1);
+  reg_irs->set_ims_sub_xml(SERVICE_PROFILE);
+
+  EXPECT_CALL(*_mock_progress_cb, progress_callback()).Times(2);
+  Store::Status status = _memcached_cache->put_implicit_registration_set(reg_irs, _progress_callback, 0L, nullptr);
+  EXPECT_EQ(Store::Status::OK, status);
+
+  status = _memcached_cache->put_implicit_registration_set(unreg_irs, _progress_callback, 0L, nullptr);
+  EXPECT_EQ(Store::Status::OK, status);
+
+  // Now, get the data from the store and check that the reg state is REGISTERED
+  ImplicitRegistrationSet* stored_irs = nullptr;
+  status = _memcached_cache->get_implicit_registration_set_for_impu(IMPU,
+                                                                    0L,
+                                                                    nullptr,
+                                                                    stored_irs);
+  ASSERT_EQ(Store::Status::OK, status);
+  ASSERT_NE(nullptr, stored_irs);
+  ASSERT_EQ(stored_irs->get_reg_state(), RegistrationState::REGISTERED);
+
+  delete unreg_irs;
+  delete reg_irs;
+  delete stored_irs;
 }
 
 TEST_F(MemcachedCacheTest, PutIrsRemoteError)
@@ -1129,7 +1264,7 @@ TEST_F(MemcachedCacheTest, PutIrsRemoteError)
 
   // Expect that we still report success, but that we log the error
   EXPECT_CALL(*_mock_progress_cb, progress_callback());
-  Store::Status status = _memcached_cache->put_implicit_registration_set(irs, _progress_callback, 0L);
+  Store::Status status = _memcached_cache->put_implicit_registration_set(irs, _progress_callback, 0L, nullptr);
   EXPECT_EQ(Store::Status::OK, status);
 
   EXPECT_TRUE(log.contains("Failed to perform operation to remote store with error 4"));
@@ -1146,7 +1281,7 @@ TEST_F(MemcachedCacheTest, PutIrsUnchanged)
 
   // Expect that we still report success and call the progress callback
   EXPECT_CALL(*_mock_progress_cb, progress_callback());
-  Store::Status status = _memcached_cache->put_implicit_registration_set(mirs, _progress_callback, 0L);
+  Store::Status status = _memcached_cache->put_implicit_registration_set(mirs, _progress_callback, 0L, nullptr);
   EXPECT_EQ(Store::Status::OK, status);
 
   delete mirs;
@@ -1241,7 +1376,7 @@ TEST_F(MemcachedCacheTest, PutIrsWithExistingRefreshed)
 
   ImplicitRegistrationSet* irs;
 
-  _memcached_cache->get_implicit_registration_set_for_impu(IMPU, 0L, irs);
+  _memcached_cache->get_implicit_registration_set_for_impu(IMPU, 0L, nullptr, irs);
 
   irs->set_ttl(2);
   irs->set_ims_sub_xml(SERVICE_PROFILE_3);
@@ -1251,7 +1386,7 @@ TEST_F(MemcachedCacheTest, PutIrsWithExistingRefreshed)
   irs->add_associated_impi(IMPI_3);
 
   EXPECT_CALL(*_mock_progress_cb, progress_callback());
-  Store::Status status = _memcached_cache->put_implicit_registration_set(irs, _progress_callback, 0L);
+  Store::Status status = _memcached_cache->put_implicit_registration_set(irs, _progress_callback, 0L, nullptr);
   EXPECT_EQ(Store::Status::OK, status);
 
   delete irs;
@@ -1267,7 +1402,7 @@ TEST_F(MemcachedCacheTest, DeleteIrsNotAdded)
   irs->set_reg_state(RegistrationState::REGISTERED);
 
   EXPECT_CALL(*_mock_progress_cb, progress_callback());
-  Store::Status status = _memcached_cache->delete_implicit_registration_set(irs, _progress_callback, 0L);
+  Store::Status status = _memcached_cache->delete_implicit_registration_set(irs, _progress_callback, 0L, nullptr);
   EXPECT_EQ(Store::Status::OK, status);
 
   delete irs;
@@ -1292,12 +1427,12 @@ TEST_F(MemcachedCacheTest, DeleteIrsAddedRemote)
 
   ImplicitRegistrationSet* irs;
 
-  _memcached_cache->get_implicit_registration_set_for_impu(IMPU, 0L, irs);
+  _memcached_cache->get_implicit_registration_set_for_impu(IMPU, 0L, nullptr, irs);
 
   std::vector<ImplicitRegistrationSet*> irss = {irs};
 
   EXPECT_CALL(*_mock_progress_cb, progress_callback());
-  Store::Status status = _memcached_cache->delete_implicit_registration_set(irs, _progress_callback, 0L);
+  Store::Status status = _memcached_cache->delete_implicit_registration_set(irs, _progress_callback, 0L, nullptr);
   EXPECT_EQ(Store::Status::OK, status);
 
   delete irs;
@@ -1322,7 +1457,7 @@ TEST_F(MemcachedCacheTest, DeleteIrsAddedLocalStoreFail)
 
   ImplicitRegistrationSet* irs;
 
-  _memcached_cache->get_implicit_registration_set_for_impu(IMPU, 0L, irs);
+  _memcached_cache->get_implicit_registration_set_for_impu(IMPU, 0L, nullptr, irs);
 
   std::vector<ImplicitRegistrationSet*> irss = {irs};
 
@@ -1330,7 +1465,7 @@ TEST_F(MemcachedCacheTest, DeleteIrsAddedLocalStoreFail)
 
   // The progress_callback is not called on error
   EXPECT_EQ(Store::Status::ERROR,
-            _memcached_cache->delete_implicit_registration_sets(irss, _progress_callback, 0L));
+            _memcached_cache->delete_implicit_registration_sets(irss, _progress_callback, 0L, nullptr));
 
   delete irs;
 }
@@ -1354,10 +1489,12 @@ TEST_F(MemcachedCacheTest, DeleteIrss)
 
   ImplicitRegistrationSet* irs;
 
-  _memcached_cache->get_implicit_registration_set_for_impu(IMPU, 0L, irs);
+  _memcached_cache->get_implicit_registration_set_for_impu(IMPU, 0L, nullptr, irs);
 
   EXPECT_CALL(*_mock_progress_cb, progress_callback());
-  Store::Status status = _memcached_cache->delete_implicit_registration_set(irs, _progress_callback, 0L);
+
+  Utils::StopWatch unused;
+  Store::Status status = _memcached_cache->delete_implicit_registration_set(irs, _progress_callback, 0L, &unused);
   EXPECT_EQ(Store::Status::OK, status);
 
   delete irs;
@@ -1385,6 +1522,7 @@ TEST_F(MemcachedCacheTest, GetIrsForImpus)
   Store::Status status =
     _memcached_cache->get_implicit_registration_sets_for_impus({IMPU},
                                                                0L,
+                                                               nullptr,
                                                                irss);
 
   EXPECT_EQ(Store::Status::OK, status);
@@ -1403,6 +1541,7 @@ TEST_F(MemcachedCacheTest, GetImsSubscriptionNotFound)
   Store::Status status =
     _memcached_cache->get_ims_subscription(IMPI,
                                            0L,
+                                           nullptr,
                                            subscription);
 
   EXPECT_EQ(Store::Status::NOT_FOUND, status);
@@ -1438,6 +1577,7 @@ TEST_F(MemcachedCacheTest, GetImsSubscriptionLocal)
   Store::Status status =
     _memcached_cache->get_ims_subscription(IMPI,
                                            0L,
+                                           nullptr,
                                            subscription);
 
   EXPECT_EQ(Store::Status::OK, status);
@@ -1475,6 +1615,7 @@ TEST_F(MemcachedCacheTest, GetImsSubscriptionRemote)
   Store::Status status =
     _memcached_cache->get_ims_subscription(IMPI,
                                            0L,
+                                           nullptr,
                                            subscription);
 
   EXPECT_EQ(Store::Status::OK, status);
@@ -1511,6 +1652,7 @@ TEST_F(MemcachedCacheTest, PutImsSubscription)
 
   _memcached_cache->get_ims_subscription(IMPI,
                                          0L,
+                                         nullptr,
                                          subscription);
 
   subscription->set_charging_addrs(CHARGING_ADDRESSES_2);
@@ -1520,9 +1662,135 @@ TEST_F(MemcachedCacheTest, PutImsSubscription)
   Store::Status status =
     _memcached_cache->put_ims_subscription(subscription,
                                            _progress_callback,
-                                           0L);
+                                           0L,
+                                           nullptr);
 
   EXPECT_EQ(Store::Status::OK, status);
 
   delete subscription;
+}
+
+// Tests that use a MockImpuStore rather than a real ImpuStore backed by LocalStores
+class MemcachedCacheMockStoreTest : public ControlTimeTest
+{
+public:
+  virtual void SetUp() override
+  {
+    _local_mock_store = new StrictMock<MockImpuStore>();
+    _remote_mock_store1 = new StrictMock<MockImpuStore>();
+    _remote_mock_store2 = new StrictMock<MockImpuStore>();
+    _memcached_cache = new MemcachedCache(_local_mock_store, {_remote_mock_store1, _remote_mock_store2}, 2, nullptr);
+  }
+
+  virtual void TearDown() override
+  {
+    delete _memcached_cache;
+    delete _local_mock_store;
+    delete _remote_mock_store1;
+    delete _remote_mock_store2;
+  }
+
+private:
+  StrictMock<MockImpuStore>* _local_mock_store;
+  StrictMock<MockImpuStore>* _remote_mock_store1;
+  StrictMock<MockImpuStore>* _remote_mock_store2;
+  MemcachedCache* _memcached_cache;
+
+  // These allow us to advance time as a side effect of a mock function call
+  // They all actually pause for 5ms too, to avoid some double counting in
+  // the MemcachedCache (which we don't care about in production, as we'd rather
+  // over-count than under-count)
+  static void advance_time_10_ms()
+  {
+    usleep(5000);
+    cwtest_advance_time_ms(10);
+  }
+
+  static void advance_time_25_ms()
+  {
+    usleep(5000);
+    cwtest_advance_time_ms(25);
+  }
+
+  static void advance_time_50_ms()
+  {
+    usleep(5000);
+    cwtest_advance_time_ms(50);
+  }
+};
+
+TEST_F(MemcachedCacheMockStoreTest, UpdateIrsImpiMappingsDataContention)
+{
+  // Tests that if we add an ImpiMapping, hit DATA_CONTENTION when setting it,
+  // and then get NOT_FOUND on trying to get the stored mapping, we'll re-try
+  // with the original and that will succeed
+  MemcachedImplicitRegistrationSet* mirs = new MemcachedImplicitRegistrationSet();
+
+  mirs->set_ttl(1);
+  mirs->set_ims_sub_xml(SERVICE_PROFILE);
+  mirs->set_reg_state(RegistrationState::REGISTERED);
+  mirs->add_associated_impi(IMPI);
+
+  // The first set hits contention, the second succeeds
+  EXPECT_CALL(*_local_mock_store, set_impi_mapping(_, _))
+    .WillOnce(Return(Store::Status::DATA_CONTENTION))
+    .WillOnce(Return(Store::Status::OK));
+
+  // The get fails with NOT_FOUND
+  EXPECT_CALL(*_local_mock_store, get_impi_mapping(_, _, _)).WillOnce(Return(Store::Status::NOT_FOUND));
+
+  Store::Status status = _memcached_cache->update_irs_impi_mappings(mirs, 0L, _local_mock_store, nullptr);
+  EXPECT_EQ(Store::Status::OK, status);
+
+  delete mirs;
+}
+
+TEST_F(MemcachedCacheMockStoreTest, UpdateIrsImpiMappingsDataContentionError)
+{
+  // Tests that if we add an ImpiMapping, hit DATA_CONTENTION when setting it,
+  // and then get ERROR on trying to get the stored mapping, we'll give up and
+  // report the error
+  MemcachedImplicitRegistrationSet* mirs = new MemcachedImplicitRegistrationSet();
+
+  mirs->set_ttl(1);
+  mirs->set_ims_sub_xml(SERVICE_PROFILE);
+  mirs->set_reg_state(RegistrationState::REGISTERED);
+  mirs->add_associated_impi(IMPI);
+
+  // Only one set, which hits contention
+  EXPECT_CALL(*_local_mock_store, set_impi_mapping(_, _))
+    .WillOnce(Return(Store::Status::DATA_CONTENTION));
+
+  // The get fails with ERROR
+  EXPECT_CALL(*_local_mock_store, get_impi_mapping(_, _, _)).WillOnce(Return(Store::Status::ERROR));
+  Store::Status status = _memcached_cache->update_irs_impi_mappings(mirs, 0L, _local_mock_store, nullptr);
+  EXPECT_EQ(Store::Status::ERROR, status);
+
+  delete mirs;
+}
+
+TEST_F(MemcachedCacheMockStoreTest, StopWatchGetImpuForImpuGR)
+{
+  ImpuStore::Impu* result = nullptr;
+  Utils::StopWatch stopwatch;
+  stopwatch.start();
+
+  // The local store will take 10ms to return NOT_FOUND
+  EXPECT_CALL(*_local_mock_store, get_impu(_, _, _))
+    .WillOnce(DoAll(InvokeWithoutArgs(advance_time_10_ms), Return(Store::Status::NOT_FOUND)));
+
+  // The first remote store will take an additional 25ms to return NOT_FOUND
+  EXPECT_CALL(*_remote_mock_store1, get_impu(_, _, _))
+  .WillOnce(DoAll(InvokeWithoutArgs(advance_time_25_ms), Return(Store::Status::NOT_FOUND)));
+
+  // The second remote store will take an additional 50ms to return NOT_FOUND
+  EXPECT_CALL(*_remote_mock_store2, get_impu(_, _, _))
+  .WillOnce(DoAll(InvokeWithoutArgs(advance_time_50_ms), Return(Store::Status::NOT_FOUND)));
+
+  _memcached_cache->get_impu_for_impu_gr(IMPU, result, 0L, &stopwatch);
+
+  // The stopwatch should have advanced by 85ms
+  unsigned long time = 0L;
+  EXPECT_TRUE(stopwatch.read(time));
+  EXPECT_EQ(time, 85000);
 }

@@ -28,22 +28,26 @@ public:
   // Send a multimedia auth request to the HSS
   virtual void send_multimedia_auth_request(maa_cb callback,
                                             MultimediaAuthRequest request,
-                                            SAS::TrailId trail) override;
+                                            SAS::TrailId trail,
+                                            Utils::StopWatch* stopwatch) override;
 
   // Send a user auth request to the HSS
   virtual void send_user_auth_request(uaa_cb callback,
                                       UserAuthRequest request,
-                                      SAS::TrailId trail) override;
+                                      SAS::TrailId trail,
+                                      Utils::StopWatch* stopwatch) override;
 
   // Send a location info request to the HSS
   virtual void send_location_info_request(lia_cb callback,
                                           LocationInfoRequest request,
-                                          SAS::TrailId trail) override;
+                                          SAS::TrailId trail,
+                                          Utils::StopWatch* stopwatch) override;
 
   // Send a server assignment request to the HSS
   virtual void send_server_assignment_request(saa_cb callback,
                                               ServerAssignmentRequest request,
-                                              SAS::TrailId trail) override;
+                                              SAS::TrailId trail,
+                                              Utils::StopWatch* stopwatch) override;
 
   template <class AnswerType>
   class HsProvTransaction : public CassandraStore::Transaction
@@ -58,6 +62,8 @@ public:
       _response_clbk(callback),
       _stats_manager(stats_manager)
     {};
+
+    virtual ~HsProvTransaction() {};
 
   protected:
     callback_t _response_clbk;
@@ -88,6 +94,7 @@ public:
     using HsProvTransaction::HsProvTransaction;
 
     virtual MultimediaAuthAnswer create_answer(CassandraStore::Operation* op) override;
+    virtual ~MarHsProvTransaction() {};
   };
 
   class LirHsProvTransaction : public HsProvTransaction<LocationInfoAnswer>
@@ -97,6 +104,7 @@ public:
     using HsProvTransaction::HsProvTransaction;
 
     virtual LocationInfoAnswer create_answer(CassandraStore::Operation* op) override;
+    virtual ~LirHsProvTransaction() {};
   };
 
   class SarHsProvTransaction : public HsProvTransaction<ServerAssignmentAnswer>
@@ -106,6 +114,7 @@ public:
     using HsProvTransaction::HsProvTransaction;
 
     virtual ServerAssignmentAnswer create_answer(CassandraStore::Operation* op) override;
+    virtual ~SarHsProvTransaction() {};
   };
 
 private:

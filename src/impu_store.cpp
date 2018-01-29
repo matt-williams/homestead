@@ -357,8 +357,6 @@ Store::Status ImpuStore::Impu::to_data(std::string& data)
       json = buffer.GetString();
     }
 
-    json.push_back('\0'); // Add a terminating null byte for safety
-
     uncomp_size = json.size();
 
     TRC_DEBUG("Wrote IMPU %s to JSON: %lu bytes", impu.c_str(), uncomp_size);
@@ -489,13 +487,13 @@ Store::Status ImpuStore::ImpiMapping::to_data(std::string& data)
   write_json(writer);
   writer.EndObject();
   data = buffer.GetString();
-  data.push_back('\0'); // Add a terminating null byte for safety
 
   return Store::Status::OK;
 }
 
-ImpuStore::Impu* ImpuStore::get_impu(const std::string& impu,
-                                     SAS::TrailId trail)
+Store::Status ImpuStore::get_impu(const std::string& impu,
+                                  ImpuStore::Impu*& out_impu,
+                                  SAS::TrailId trail)
 {
   std::string data;
   uint64_t cas;
@@ -509,12 +507,23 @@ ImpuStore::Impu* ImpuStore::get_impu(const std::string& impu,
 
   if (status == Store::Status::OK)
   {
-    return ImpuStore::Impu::from_data(impu, data, cas, this);
+    // Use a temporary variable to hold the Impu* so that we don't change
+    // out_impu if we fail to decode the impu
+    ImpuStore::Impu* temp_impu = ImpuStore::Impu::from_data(impu, data, cas, this);
+
+    if (temp_impu == nullptr)
+    {
+      // We failed to decode the impu from the retrieved data, so just return an
+      // ERROR
+      status = Store::Status::ERROR;
+    }
+    else
+    {
+      out_impu = temp_impu;
+    }
   }
-  else
-  {
-    return nullptr;
-  }
+
+  return status;
 }
 
 Store::Status ImpuStore::set_impu_without_cas(ImpuStore::Impu* impu,
@@ -534,6 +543,31 @@ Store::Status ImpuStore::set_impu_without_cas(ImpuStore::Impu* impu,
                                           impu->expiry - now,
                                           trail,
                                           false);
+  }
+
+  return status;
+}
+
+Store::Status ImpuStore::add_impu(ImpuStore::Impu* impu,
+                                  SAS::TrailId trail)
+{
+  std::string data;
+
+  Store::Status status = impu->to_data(data);
+
+  if (status == Store::Status::OK)
+  {
+    int now = time(0);
+
+    // Set the data with a CAS of 0, which will fail if there's data already
+    // present
+    status = _store->set_data("impu",
+                              impu->impu,
+                              data,
+                              0,
+                              impu->expiry - now,
+                              trail,
+                              false);
   }
 
   return status;
@@ -574,8 +608,9 @@ Store::Status ImpuStore::delete_impu(ImpuStore::Impu* impu,
   return _store->delete_data("impu", impu->impu, trail);
 }
 
-ImpuStore::ImpiMapping* ImpuStore::get_impi_mapping(const std::string impi,
-                                                    SAS::TrailId trail)
+Store::Status ImpuStore::get_impi_mapping(const std::string impi,
+                                          ImpuStore::ImpiMapping*& out_mapping,
+                                          SAS::TrailId trail)
 {
   std::string data;
   uint64_t cas;
@@ -584,16 +619,29 @@ ImpuStore::ImpiMapping* ImpuStore::get_impi_mapping(const std::string impi,
                                           impi,
                                           data,
                                           cas,
-                                          trail);
+                                          trail,
+                                          Store::Format::JSON);
 
   if (status == Store::Status::OK)
   {
-    return ImpuStore::ImpiMapping::from_data(impi, data, cas);
+    // Use a temporary variable to hold the ImpiMapping* so that we don't change
+    // out_mapping if we fail to decode the mapping
+    ImpuStore::ImpiMapping* mapping = ImpuStore::ImpiMapping::from_data(impi,
+                                                                        data,
+                                                                        cas);
+    if (mapping == nullptr)
+    {
+      // We failed to decode the mapping from the retrieved data, so just return
+      // an ERROR
+      status = Store::Status::ERROR;
+    }
+    else
+    {
+      out_mapping = mapping;
+    }
   }
-  else
-  {
-    return nullptr;
-  }
+
+  return status;
 }
 
 Store::Status ImpuStore::set_impi_mapping(ImpiMapping* mapping,
@@ -612,7 +660,8 @@ Store::Status ImpuStore::set_impi_mapping(ImpiMapping* mapping,
                               data,
                               mapping->cas,
                               mapping->get_expiry() - now,
-                              trail);
+                              trail,
+                              Store::Format::JSON);
   }
 
   return status;
